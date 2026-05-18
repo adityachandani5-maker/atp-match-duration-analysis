@@ -55,8 +55,8 @@ https://github.com/JeffSackmann/tennis_atp
 
 ## Files
 
-- `atp-match-duration-analysis-polished.Rmd`: Full R Markdown analysis
-- `atp-match-duration-analysis.pdf`: Final knitted report
+- `ATP-Match-Duration.Rmd`: Full R Markdown analysis
+- `ATP-Match-Duration.pdf`: Final knitted report
 
 ## Author
 
