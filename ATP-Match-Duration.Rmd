@@ -1,0 +1,630 @@
+---
+title: "ATP Match Duration and Ace Performance Analysis"
+author: "Aditya Chandani"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    fig_caption: true
+geometry: margin=1in
+header-includes:
+  - \usepackage{caption}
+---
+
+\listoffigures
+\listoftables
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  fig.width = 10,
+  fig.height = 5,
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  eval = TRUE,
+  comment = ""
+)
+
+library(tidyverse)
+library(knitr)
+library(caret)
+library(FNN)
+library(MASS)
+
+atp <- read_csv("https://raw.githubusercontent.com/JeffSackmann/tennis_atp/master/atp_matches_2024.csv")
+```
+
+# Introduction
+
+This project analyzes 2024 ATP tennis match data to study whether match duration can be predicted using player and match variables, and whether winner ace performance can be classified as high or low using player and match characteristics.
+
+This analysis could be useful for TV broadcasters planning match coverage and for coaches studying opponent serving patterns.
+
+## Research questions
+
+1. **Regression question:** Can match duration be predicted using player, match, and tournament variables?
+
+2. **Classification question:** Can winner ace performance be classified as high or low based on player and match variables such as winner height, surface, match duration, ranking, first-serve performance, and handedness?
+
+## Key results
+
+- Multiple Linear Regression explained about 31% of the variation in match duration.
+- KNN regression performed best at approximately K = 16.
+- Multiple Linear Regression had slightly lower test error than KNN and was easier to interpret.
+- Logistic Regression and QDA both achieved roughly 71--73% cross-validation accuracy for classifying ace performance.
+
+
+
+## Data set description
+
+The dataset used for this analysis is the *2024 ATP Match Results* database. It is maintained by *Jeff Sackmann*. It provides a record of every professional match played on the ATP Tour for the season. 
+
+### Source
+
+Jeff Sackmann's Tennis ATP GitHub.
+
+### URL:
+
+https://github.com/JeffSackmann/tennis_atp
+
+### Collection: 
+
+The data is compiled from ATP match reports and tournament logs. It includes matches from all surfaces and various tour levels (Grand Slams, Masters, etc.) Additionally, the data includes quite a few in-game statistics.
+
+# Statistical Methods
+
+## Regression 
+
+To answer the regression question on match duration, I use two regression techniques: Multiple Linear Regression and K-Nearest Neighbors regression. 
+
+### Multiple Linear Regression
+
+
+The first regression technique used is Multiple Linear Regression. I chose multiple linear regression because it is a standard and highly interpretable method for predicting a quantitative response. In this project, it allows me to examine how match duration changes with predictors such as winner’s aces and court surface, while also quantifying the direction and size of each predictor’s effect. Multiple linear regression is especially useful because its coefficients can be interpreted directly, making the relationship between the predictors and match duration easy to explain.
+
+For this technique, I use backward stepwise selection to identify which predictors remain in the final model.
+
+```{r}
+atp.mlr <- atp %>%
+  dplyr::select(
+    minutes,
+    w_ace,
+    surface,
+    winner_ht,
+    winner_rank,
+    loser_rank,
+    best_of,
+    draw_size,
+    winner_age,
+    loser_age,
+    round
+  ) %>%
+  filter(
+    !is.na(minutes),
+    !is.na(w_ace),
+    !is.na(surface),
+    !is.na(winner_ht),
+    !is.na(winner_rank),
+    !is.na(loser_rank),
+    !is.na(best_of),
+    !is.na(draw_size),
+    !is.na(winner_age),
+    !is.na(loser_age),
+    !is.na(round),
+    minutes > 0
+  )
+
+atp.mlr$surface <- factor(atp.mlr$surface)
+atp.mlr$surface <- relevel(atp.mlr$surface, ref = "Hard")
+
+atp.mlr$round <- factor(atp.mlr$round)
+
+full_lm <- lm(
+  minutes ~ w_ace + surface + winner_ht + winner_rank + loser_rank +
+    best_of + draw_size + winner_age + loser_age + round,
+  data = atp.mlr
+)
+
+backward_lm <- step(full_lm, direction = "backward", trace = 0)
+
+```
+
+
+After running backward selection, the resulting model is summarized below.
+
+
+```{r}
+summary(backward_lm)
+```
+
+
+The model summary shows two main results. First, the adjusted $R^2$ and multiple $R^2$ indicate that the model explains about 31% of the variation in match duration. Second, the F-statistic shows that the model as a whole is statistically significant, with a p-value of 2.2e-16, which is far below 0.05. The fitted model can be written as follows:
+
+
+$minutes_i = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3 + \beta_4X_4 + \beta_5X_5 + \beta_6X_6 + \beta_7X_7 + \beta_8X_8 + \epsilon_i$
+
+where $X_1$ is the number of aces served by the winner, $X_2$ is an indicator variable for clay surface, $X_3$ is an indicator variable for grass surface, $X_4$ is the winner's height, $X_5$ is the loser's rank, $X_6$ is the best-of match format, $X_7$ is the draw size, $X_8$ is the winner's age, and $\epsilon_i$ is the error term for observation $i$.
+
+Before interpreting the model further, I check the regression assumptions.
+
+```{r, fig.cap="Diagnostic plots for the multiple linear regression model"}
+par(mfrow = c(2, 2))
+plot(backward_lm)
+```
+
+*Residuals vs Fitted*
+
+The residuals are centered around 0. However, there is some visible pattern across the fitted values. This suggests that linearity is approximately satisfied, while the data may be slightly heteroskedastic.
+
+*Normal Q-Q plot*
+
+The points are fairly close to the line in the middle of the Q-Q plot. However, there is deviation around the tails. Therefore, the data does not perfectly satisfy the normality assumption, but the residuals appear reasonably normal for this analysis.
+
+*Scale-Location*
+
+The red line is not perfectly flat, which supports the earlier observation that mild heteroskedasticity may be present.
+
+*Residuals vs Leverage*
+
+Most points have low leverage, with a few somewhat unusual observations. No observations appear to have extremely high leverage or influence.
+
+*Conclusion of Regression Assumptions*
+
+The plots indicate that the regression assumptions are reasonably met overall. The model is acceptable for this analysis, although the diagnostic plots suggest mild heteroskedasticity and some tail deviations from normality. 
+
+Before calculating the test error for MLR, I fit a KNN model and then compare the test errors for both regression models.
+
+I also visualize the relationship between winner aces and predicted match duration. Since a multidimensional plot would be difficult to interpret, I hold the other predictors constant and vary only `w_ace`. I chose `w_ace` because it has one of the smallest p-values in the model and is interesting to examine visually.
+
+```{r, fig.cap="Predicted match duration by winner aces, holding other predictors constant"}
+mainPlotData <- data.frame(
+  w_ace = seq(min(atp.mlr$w_ace), max(atp.mlr$w_ace), length.out = 100),
+  surface = "Hard",
+  winner_ht = mean(atp.mlr$winner_ht),
+  loser_rank = mean(atp.mlr$loser_rank),
+  best_of = mean(atp.mlr$best_of),
+  draw_size = mean(atp.mlr$draw_size),
+  winner_age = mean(atp.mlr$winner_age)
+)
+
+mainPlotData$surface <- factor(mainPlotData$surface,
+                               levels = levels(atp.mlr$surface))
+
+mainPlotData$predicted_minutes <- predict(backward_lm, newdata = mainPlotData)
+
+ggplot(mainPlotData, aes(x = w_ace, y = predicted_minutes)) +
+  geom_line(linewidth = 1.2) +
+  labs(
+    title = "Predicted Match Duration vs Winner's Aces",
+    x = "Winner's Aces",
+    y = "Predicted Match Duration (Minutes)"
+  ) +
+  theme_minimal()
+```
+
+Holding other variables constant, predicted match duration increases as the winner’s aces increase. This was initially counterintuitive. However, a possible explanation is that more winner aces often occur in longer matches, because longer matches give the winner more service opportunities.
+
+### K-Nearest Neighbors Regression
+
+For the second regression technique, I fit a K-Nearest Neighbors (KNN) regression model. I used the same predictors as the MLR model because they are reasonable factors that could influence match duration, including player characteristics, match format, and tournament context. Using the same predictors also makes the comparison more fair.
+
+
+```{r, fig.cap="Cross-validation RMSE for KNN regression across K values"}
+set.seed(317)
+
+atpKNN <- atp %>%
+  dplyr::select(minutes, w_ace, surface, winner_ht, winner_rank,
+         loser_rank, best_of, draw_size, winner_age,
+         loser_age, round) %>%
+  filter(!is.na(minutes), !is.na(w_ace), !is.na(surface),
+         !is.na(winner_ht), !is.na(winner_rank),
+         !is.na(loser_rank), !is.na(best_of),
+         !is.na(draw_size), !is.na(winner_age),
+         !is.na(loser_age), !is.na(round),
+         minutes > 0)
+
+atpKNN$surface <- factor(atpKNN$surface)
+atpKNN$round <- factor(atpKNN$round)
+
+trControl <- trainControl(method = "cv", number = 10)
+
+knnReg <- train(minutes ~ ., data = atpKNN,
+                method = "knn",
+                trControl = trControl,
+                preProcess = c("center", "scale"),
+                tuneGrid = expand.grid(k = 1:20))
+
+plot(knnReg)
+
+```
+
+The plot shows that model performance improves as K increases until roughly 15, after which performance begins to worsen slightly. The exact cross-validation results are shown below.
+
+```{r}
+knnReg$results
+```
+
+The best model occurs at K = 16. After this point, RMSE increases slightly, so I use K = 16 for the final KNN regression model.
+
+At K = 16, the RMSE is approximately 35.5, meaning the typical prediction error of the model is about 35.5 minutes.
+
+## Comparison of Regression Techniques
+
+I now compare K-Nearest Neighbors regression and Multiple Linear Regression.
+
+```{r}
+set.seed(317)
+
+modelData <- atp %>%
+  dplyr::select(minutes, w_ace, surface, winner_ht, winner_rank,
+         loser_rank, best_of, draw_size, winner_age,
+         loser_age, round) %>%
+  filter(!is.na(minutes), !is.na(w_ace), !is.na(surface),
+         !is.na(winner_ht), !is.na(winner_rank),
+         !is.na(loser_rank), !is.na(best_of),
+         !is.na(draw_size), !is.na(winner_age),
+         !is.na(loser_age), !is.na(round),
+         minutes > 0)
+
+modelData$surface <- factor(modelData$surface)
+modelData$round <- factor(modelData$round)
+
+ind <- sample(c(rep(TRUE, ceiling(nrow(modelData)*0.7)),
+                rep(FALSE, floor(nrow(modelData)*0.3))))
+
+trainingData <- modelData[ind, ]
+testData <- modelData[!ind, ]
+
+# Multiple Linear Regression 
+strLn <- lm(minutes ~ w_ace + surface + winner_ht + winner_rank +
+              loser_rank + best_of + draw_size + winner_age +
+              loser_age + round,
+            data = trainingData)
+
+trainingData$strLnPred <- predict(strLn, trainingData)
+testData$strLnPred <- predict(strLn, testData)
+
+trainMSElm <- mean((trainingData$minutes - trainingData$strLnPred)^2)
+testMSElm <- mean((testData$minutes - testData$strLnPred)^2)
+
+# KNN with K = 16
+xTrain <- model.matrix(minutes ~ ., trainingData)[, -1]
+xTest <- model.matrix(minutes ~ ., testData)[, -1]
+
+trainMeans <- apply(xTrain, 2, mean)
+trainSds <- apply(xTrain, 2, sd)
+trainSds[trainSds == 0] <- 1
+
+xTrainSc <- scale(xTrain, center = trainMeans, scale = trainSds)
+xTestSc <- scale(xTest, center = trainMeans, scale = trainSds)
+
+yTrain <- trainingData$minutes
+yTest <- testData$minutes
+
+knnTrainPred <- knn.reg(train = xTrainSc,
+                        test = xTrainSc,
+                        y = yTrain,
+                        k = 16)$pred
+
+knnTestPred <- knn.reg(train = xTrainSc,
+                       test = xTestSc,
+                       y = yTrain,
+                       k = 16)$pred
+
+trainMSEknn <- mean((yTrain - knnTrainPred)^2)
+testMSEknn <- mean((yTest - knnTestPred)^2)
+
+# Results
+errTable <- data.frame(
+  Model = c("Multiple Linear Regression", "KNN Regression (K = 16)"),
+  Training_MSE = c(trainMSElm, trainMSEknn),
+  Test_MSE = c(testMSElm, testMSEknn)
+)
+
+kable(errTable, digits = 3,
+      caption = "Training and Test MSE for Multiple Linear Regression and KNN Regression")
+```
+
+Based on the test errors, Multiple Linear Regression appears to perform slightly better than KNN regression. It also has better interpretability, which makes it more useful for explaining how each predictor relates to match duration.
+
+## Classification
+
+The classification question is about predicting whether the match winner has high ace performance. I apply two classification techniques: Logistic Regression and Quadratic Discriminant Analysis (QDA). Using these methods, I analyze how player and match variables such as winner height, court surface, match duration, winner rank, first-serve performance, and winner hand influence ace performance. To define the classification variable, I use the median number of winner aces as the cutoff. Matches above the median are classified as High Aces, while matches at or below the median are classified as Low Aces.
+
+### Boxplot of High vs. Low Aces 
+```{r, fig.cap="Distribution of Aces by Class"}
+# Clean the data for the classification models
+atp$winner_hand <- factor(atp$winner_hand)
+atp$surface <- relevel(factor(atp$surface), ref = "Hard")
+
+
+# Create categorical ace performance variable
+atp$high_aces <- ifelse(atp$w_ace > median(atp$w_ace, na.rm = TRUE),
+                        "High", "Low")
+atp$high_aces <- factor(atp$high_aces, levels = c("Low", "High"))
+
+# Boxplot of number of aces in high and low class
+boxplot(w_ace ~ high_aces, data = atp,
+        col = c("lightblue", "salmon"),
+        ylab = "Number of Aces",
+        xlab = "Aces Class (High vs Low)",
+        main = "Distribution of Aces by Class")
+```
+
+The boxplot shows a clear gap between the high and low ace classes, indicating a strong difference between the two groups. This suggests that the median split creates two distinct classes.
+
+### Boxplot of Aces by Surface 
+```{r, fig.cap="Number of Aces by Court Surface"}
+# Boxplot of aces by surface
+boxplot(w_ace ~ surface, data = atp,
+        col = c("lightblue", "salmon", "lightgreen"),
+        ylab = "Number of Aces",
+        xlab = "Court Surface",
+        main = "Number of Aces by Court Surface")
+```
+
+The boxplot suggests that grass courts tend to have the highest number of aces, followed by hard courts and then clay courts. This pattern is useful to keep in mind when interpreting the classification model results.
+
+### Scatterplot 
+```{r, fig.cap="Relationship between winner height and number of aces"}
+# Scatterplot of aces against player height
+plot(atp$winner_ht, atp$w_ace,
+     col = "gray40",
+     pch = 16,
+     xlab = "Winner Height",
+     ylab = "Number of Aces",
+     main = "Aces vs Winner Height")
+
+abline(lm(w_ace ~ winner_ht, data = atp), lwd = 2)
+```
+
+This scatterplot compares ace performance with winner height, which is expected to be an important predictor of ace performance. The plot shows a positive relationship between winner height and number of aces, suggesting that taller players generally tend to serve more aces.
+
+### Summary of the response variable
+
+```{r}
+summary_table <- data.frame(
+  Category = names(table(atp$high_aces)),
+  Count = as.numeric(table(atp$high_aces))
+)
+
+kable(summary_table,
+      caption = "Summary of High and Low Ace Performance Classes")
+
+
+```
+
+The summary table shows that the classes are fairly evenly split between High and Low Aces, which is useful for classification modeling.
+
+
+
+### Logistic Regression
+
+The first classification technique is logistic regression. This model estimates the probability that a match falls into the High Aces group using winner height, court surface, match duration, winner rank, first-serve performance, and winner hand as predictors. I also use the model to predict and plot how winner height and surface affect the probability of High Aces.
+
+The logistic regression model is given by:
+
+
+
+$$\log\left(\frac{p_i}{1-p_i}\right) = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3 + \beta_4X_4 + \beta_5X_5 + \beta_6X_6 + \beta_7X_7$$
+
+where $p_i = P(Y_i = 1)$ is the probability that the match falls into the High Aces category. Here, $X_1$ is winner height, $X_2$ and $X_3$ represent surface indicators, $X_4$ is match duration, $X_5$ is winner rank, $X_6$ is first-serve points won, and $X_7$ represents winner hand.
+
+```{r}
+
+# Fit logistic regression model
+atp.c <- glm(high_aces ~ winner_ht + surface + minutes + winner_rank + w_1stWon + winner_hand,
+             data = atp,
+             family = "binomial")
+
+# Summary of the model variables
+summary(atp.c)
+
+# New dataset for predictions
+preds <- data.frame(
+  
+  winner_ht = rep(seq(160, 210, 1), 3),
+  surface = factor(rep(c("Hard","Clay","Grass"),
+                       each = length(seq(160,210,1))),
+                   levels = levels(atp$surface)),
+
+  minutes = median(atp$minutes, na.rm = TRUE),
+  winner_rank = median(atp$winner_rank, na.rm = TRUE),
+  w_1stWon = median(atp$w_1stWon, na.rm = TRUE),
+  winner_hand = factor("R", levels = levels(atp$winner_hand))
+)
+
+
+```
+
+#### Results (Logistic Regression-Model Summary)
+
+The results indicate that several model variables are statistically significant predictors of ace performance. The model summary shows that winner height, clay surface, match duration, and first-serve performance have p-values below 0.05, suggesting that these factors are important in predicting whether a match falls into the High Aces category.
+
+```{r, fig.cap="Predicted probability of high ace performance by winner height and surface"}
+# Predict the new data using the model
+preds$point <- predict(atp.c, preds, type = "response")
+
+# Plot probability curves for each surface and winner height
+plot(preds$winner_ht[preds$surface == "Hard"],
+     preds$point[preds$surface == "Hard"],
+     type = "l", col = "blue",
+     ylim = c(0,1),
+     ylab = "P(High Aces)",
+     xlab = "Winner Height")
+
+lines(preds$winner_ht[preds$surface == "Clay"],
+      preds$point[preds$surface == "Clay"],
+      col = "red", lty = 2)
+
+lines(preds$winner_ht[preds$surface == "Grass"],
+      preds$point[preds$surface == "Grass"],
+      col = "green", lty = 3)
+
+legend(180, 0.5,
+       c("Hard", "Clay", "Grass"),
+       col = c("blue", "red", "green"),
+       lty = c(1,2,3))
+```
+
+
+
+
+#### Results (Logistic Regression-Plot)
+
+I also tested the model by plotting the predicted probability of High Aces across winner height and surface. The plot shows that clay courts generally have a lower predicted probability of High Aces than hard and grass courts. Hard and grass courts appear relatively similar in the plot, which aligns with the model summary where the grass indicator is not statistically significant relative to hard courts. Winner height is also statistically significant, and the plot suggests that taller players generally have a higher predicted probability of being in the High Aces category.
+
+### Quadratic Discriminant Analysis (QDA)
+This is the second classification technique. I consider the same match variables as the logistic regression model, but instead of only estimating probabilities, QDA directly predicts whether a match is classified as High or Low Aces. To carry out this analysis, I split the data into training and test sets, train the model on the training data, and evaluate how well it predicts unseen observations. This model may perform better than Logistic Regression if the data has nonlinear structure, because QDA is more flexible.
+
+
+```{r}
+set.seed(1)
+
+qdaData <- atp %>%
+  dplyr::select(high_aces, winner_ht, surface, minutes, winner_rank, w_1stWon) %>%
+  filter(
+    !is.na(high_aces),
+    !is.na(winner_ht),
+    !is.na(surface),
+    !is.na(minutes),
+    !is.na(winner_rank),
+    !is.na(w_1stWon)
+  )
+
+qdaData$high_aces <- factor(qdaData$high_aces)
+qdaData$surface <- droplevels(factor(qdaData$surface))
+
+trRows <- sample(1:nrow(qdaData), round(0.7 * nrow(qdaData)))
+
+train <- qdaData[trRows, ]
+test <- qdaData[-trRows, ]
+
+train$high_aces <- droplevels(train$high_aces)
+train$surface <- droplevels(train$surface)
+
+test$high_aces <- factor(test$high_aces, levels = levels(train$high_aces))
+test$surface <- factor(test$surface, levels = levels(train$surface))
+
+qda.fit <- qda(
+  high_aces ~ winner_ht + surface + minutes + winner_rank + w_1stWon,
+  data = train
+)
+
+qda.fit
+
+qda.pred <- predict(qda.fit, newdata = test)
+
+test$qdaHat <- qda.pred$class
+```
+
+#### Results (QDA Model Summary)
+The QDA results show an almost even split between High and Low Aces. The model associates higher ace performance with taller players and grass surfaces, which is broadly consistent with the logistic regression results showing that clay courts underperform relative to hard and grass courts. First-serve performance also appears positively related to High Aces, which is consistent with the logistic regression model. One difference is match duration: in the QDA results, longer matches are associated with higher ace performance, while the logistic regression coefficient for match duration is negative.
+
+```{r}
+# Creating confusion matrix
+conf_mat <- table(Actual = test$high_aces, Predicted = test$qdaHat)
+
+# Adding totals
+conf_mat_full <- addmargins(conf_mat)
+
+# Calculating accuracy
+accuracy <- mean(test$high_aces == test$qdaHat, na.rm = TRUE)
+
+# Converting to data frame for clean display
+conf_df <- as.data.frame.matrix(conf_mat)
+
+# Print clean table
+kable(conf_mat_full, caption = "Confusion Matrix for QDA Test Set Predictions")
+
+```
+
+
+
+```{r}
+accuracy <- mean(test$high_aces == test$qdaHat, na.rm = TRUE)
+
+accuracy 
+```
+
+ The QDA model achieves 70.12% accuracy on the test set, indicating reasonably good classification performance.
+
+## Classification Comparison
+
+I compare the classification models using cross-validation to evaluate which model performs better. Both models show similar trends, with taller players generally associated with higher ace performance. Both models also suggest that clay courts are associated with fewer aces.
+
+```{r, message = FALSE}
+# 10-Fold Cross-Validation for Logistic Regression and QDA
+
+set.seed(1)
+
+cvData <- atp %>%
+  dplyr::select(high_aces, winner_ht, surface, minutes, winner_rank, w_1stWon) %>%
+  filter(
+    !is.na(high_aces),
+    !is.na(winner_ht),
+    !is.na(surface),
+    !is.na(minutes),
+    !is.na(winner_rank),
+    !is.na(w_1stWon)
+  )
+
+cvData$high_aces <- factor(cvData$high_aces, levels = c("Low", "High"))
+cvData$surface <- droplevels(factor(cvData$surface))
+
+K <- 10
+folds <- sample(rep(1:K, length.out = nrow(cvData)))
+
+log.cv.error <- rep(NA, K)
+qda.cv.error <- rep(NA, K)
+
+for(k in 1:K) {
+  
+  train.cv <- cvData[folds != k, ]
+  test.cv  <- cvData[folds == k, ]
+  
+  train.cv$high_aces <- droplevels(train.cv$high_aces)
+  train.cv$surface <- droplevels(train.cv$surface)
+  
+  test.cv$high_aces <- factor(test.cv$high_aces, levels = levels(train.cv$high_aces))
+  test.cv$surface <- factor(test.cv$surface, levels = levels(train.cv$surface))
+  
+  log.cv.fit <- glm(
+    high_aces ~ winner_ht + surface + minutes + winner_rank + w_1stWon,
+    data = train.cv,
+    family = "binomial"
+  )
+  
+  log.cv.probs <- predict(log.cv.fit, newdata = test.cv, type = "response")
+  log.cv.pred <- ifelse(log.cv.probs > 0.5, "High", "Low")
+  log.cv.pred <- factor(log.cv.pred, levels = levels(test.cv$high_aces))
+  
+  log.cv.error[k] <- mean(log.cv.pred != test.cv$high_aces, na.rm = TRUE)
+  
+  qda.cv.fit <- qda(
+    high_aces ~ winner_ht + surface + minutes + winner_rank + w_1stWon,
+    data = train.cv
+  )
+  
+  qda.cv.pred <- predict(qda.cv.fit, newdata = test.cv)$class
+  
+  qda.cv.error[k] <- mean(qda.cv.pred != test.cv$high_aces, na.rm = TRUE)
+}
+
+meanLog <- mean(log.cv.error, na.rm = TRUE)
+meanQDA <- mean(qda.cv.error, na.rm = TRUE)
+
+cvTable <- data.frame(
+  Model = c("Logistic Regression", "QDA"),
+  CV_Error = c(meanLog, meanQDA),
+  CV_Accuracy = c(1 - meanLog, 1 - meanQDA)
+)
+
+kable(cvTable, digits = 3,
+      caption = "10-Fold Cross-Validation Error and Accuracy for Logistic Regression and QDA")
+
+```
+
+
+### Results
+Both models have similar cross-validation performance, with approximately 71--73% accuracy. QDA is usually more flexible and can fit nonlinear data better, but in this case Logistic Regression performs slightly better in cross-validation. This suggests that the simpler Logistic Regression model is sufficient for this classification task and performs slightly better than QDA.
